@@ -13,8 +13,10 @@ uv sync
 
 Training is configured via two JSON files:
 
-- **Hiera config** (`configs/hiera/tiny.json`): Encoder architecture - input size, number of channels, embedding dimension, number of heads, stage definitions (block counts, attention type, pooling), mask unit size, and patch embedding parameters.
-- **MAE config** (`configs/mae/basic.json`): Decoder architecture - embedding dimension, number of blocks, and number of attention heads.
+- A **Hiera config** which defines the encoder architecture. The schema can be found in [`model.py`](src/pw_hiera/hiera/model.py).
+- A **MAE config** which defines the decoder architecture for the pretraining pipeline. The schema can be found in [`mae.py`](src/pw_hiera/hiera/mae.py)
+
+We provide one config for each which was used to pretrain on Gray-Scott, which is currently the only tested and supported dataset ([`data.py`](src/pw_hiera/experiments/data.py))
 
 ## Usage
 
