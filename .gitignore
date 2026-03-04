@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache
+
+.vscode/
+
+# Virtual environments
+.venv
+
+/training/
+
+/tests/
+DESCR.md
+
+.ruff_cache/
+.uv-cache/
+
+draft.tex

@@ -1,0 +1,54 @@
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[lint]
+select = [
+    # pycodestyle
+    "E",
+    # pycodestyle warnings
+    "W",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # flake8-comprehensions
+    "C4",
+    # flake8-bandit
+    "S",
+    # flake8-tidy-imports
+    "TID",
+    # use pathlib over os.path
+    "PTH",
+    # Ruff-specific rules
+    "RUF",
+    # isort
+    "I",
+]
+ignore = [
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+    "COM812",
+    "COM819",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+]
+explicit-preview-rules = true
+
+[lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"tests/**/*.py" = ["S101"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
