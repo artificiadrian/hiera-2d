@@ -1,24 +1,17 @@
-# pw-hiera
+# hiera-2d
 
-2D reimplementation of [Hiera](https://github.com/facebookresearch/hiera) with MAE pretraining, applied to Gray-Scott reaction-diffusion simulation data.
+A minimal from scratch reimplementation of [Hiera](https://github.com/facebookresearch/hiera) in 2D along with MAE pretraining functionality and config system.
 
-## Project structure
-
-- `src/pw_hiera/hiera/` — Hiera encoder and MAE decoder implementation
-- `src/pw_hiera/experiments/` — training, data loading, visualization
-- `configs/` — JSON configs for encoder and decoder
-- `tests/` — unit tests
+---
 
 ## Usage
 
-1. Prepare a dataset directory with `train.hdf5` and `val.hdf5`.
-   Expected HDF5 structure: `/sims/sim* -> (time, channels, height, width)`
+Run MAE pretraining:
 
-2. Run MAE pretraining:
 ```bash
 uv run train-mae \
-    --mae-config configs/mae/basic_decoder.json \
-    --hiera-config configs/hiera/gray_scott_hiera_tiny.json \
+    --mae-config configs/mae/basic.json \
+    --hiera-config configs/hiera/tiny.json \
     --data-path training/data/gray_scott \
     --batch-size 32 \
     --n-epochs 200 \
@@ -29,6 +22,5 @@ uv run train-mae \
     --mask-ratio 0.6 \
     --seed 42 \
     --output-dir runs \
-    --name gs_hiera_tiny_2
+    --name gs_hiera_tiny
 ```
-
