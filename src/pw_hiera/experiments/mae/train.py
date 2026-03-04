@@ -220,8 +220,6 @@ def main():
 
     finally:
         writer.close()
-        ds_train.close()
-        ds_val.close()
 
 
 if __name__ == "__main__":
