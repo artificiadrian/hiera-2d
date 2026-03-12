@@ -4,9 +4,10 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 
-from pw_hiera.hiera.mae import MAEConfig
-from pw_hiera.hiera.model import HieraConfig
-from pw_hiera.hiera.types import Model
+from hiera_2d.experiments.data import DatasetType
+from hiera_2d.hiera.mae import MAEConfig
+from hiera_2d.hiera.model import HieraConfig
+from hiera_2d.hiera.types import Model
 
 
 class TrainConfig(Model):
@@ -26,6 +27,7 @@ class TrainArgs(Model):
     path: Path
     data_path: Path
     batch_size: int = Field(gt=0)
+    dataset: DatasetType = DatasetType.GRAY_SCOTT
 
     @field_validator("data_path")
     @classmethod
@@ -49,6 +51,7 @@ def _parse_args():
     parser.add_argument("--weight-decay", type=float, default=0.05, help="AdamW weight decay")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("-o", "--output-dir", type=Path, help="Directory where outputs are saved", required=True)
+    parser.add_argument("--dataset", type=DatasetType, choices=list(DatasetType), default=DatasetType.GRAY_SCOTT)
     parser.add_argument(
         "--name",
         type=str,
@@ -77,4 +80,5 @@ def get_train_args():
         path=Path(parsed.output_dir / parsed.name).resolve(),
         data_path=Path(parsed.data_path).resolve(),
         batch_size=parsed.batch_size,
+        dataset=parsed.dataset,
     )

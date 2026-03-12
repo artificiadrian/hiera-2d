@@ -1,0 +1,6 @@
+{
+  "d_head": 128,
+  "n_blocks": 2,
+  "n_heads": 4,
+  "mlp_ratio": 4.0
+}

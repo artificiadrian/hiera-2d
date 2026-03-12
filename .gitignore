@@ -21,3 +21,6 @@ DESCR.md
 .uv-cache/
 
 draft.tex
+
+*.h5
+outputs/

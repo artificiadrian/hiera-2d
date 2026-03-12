@@ -2,7 +2,7 @@ from pathlib import Path
 
 import torch
 
-from pw_hiera.hiera.mae import HieraMAE
+from hiera_2d.hiera.mae import HieraMAE
 
 
 def delete_old_checkpoints(run_path: Path, *, keep_last: int = 5):

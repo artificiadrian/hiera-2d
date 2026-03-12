@@ -1,4 +1,5 @@
 import random
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -8,10 +9,10 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from pw_hiera.experiments.checkpoints import save_mae_training_checkpoint
-from pw_hiera.experiments.data import GrayScottDataset
-from pw_hiera.hiera.mae import HieraMAE
-from pw_hiera.hiera.model import Hiera
+from hiera_2d.experiments.checkpoints import save_mae_training_checkpoint
+from hiera_2d.experiments.data import PDEDataset, get_dataset
+from hiera_2d.hiera.mae import HieraMAE
+from hiera_2d.hiera.model import Hiera
 
 from .config import get_train_args
 from .visualization import DEFAULT_FIXED_N_SAMPLES, render_reconstruction_grid
@@ -68,7 +69,7 @@ def run_epoch(
 @torch.no_grad()
 def visualize_reconstructions(
     model: HieraMAE,
-    dataset: GrayScottDataset,
+    dataset: PDEDataset,
     device: torch.device,
     epoch: int,
     writer: SummaryWriter,
@@ -102,8 +103,8 @@ def main():
     (args.path / "args.json").write_text(args.model_dump_json(indent=4))
 
     # load data
-    ds_train = GrayScottDataset(args.data_path, split="train")
-    ds_val = GrayScottDataset(args.data_path, split="val")
+    ds_train = get_dataset(args.dataset, args.data_path, split="train")
+    ds_val = get_dataset(args.dataset, args.data_path, split="val")
 
     ld_train = DataLoader(
         ds_train,
@@ -164,9 +165,13 @@ def main():
         best_val_loss = float("inf")
         (args.path / "checkpoints").mkdir(exist_ok=True)
 
+        t_training_start = datetime.now()
+        print(f"Training started at {t_training_start:%Y-%m-%d %H:%M:%S}")
+
         # train for n_epochs and validate after each one
         with tqdm(range(args.train_config.n_epochs), desc="Training", unit="epoch") as progress:
             for epoch in progress:
+                t_epoch_start = datetime.now()
                 writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
 
                 train_loss = run_epoch(
@@ -187,10 +192,14 @@ def main():
                     args.train_config.mask_ratio,
                     training=False,
                 )
+
+                epoch_duration = (datetime.now() - t_epoch_start).total_seconds()
                 writer.add_scalar("loss/train", train_loss, epoch)
                 writer.add_scalar("loss/val", val_loss, epoch)
+                writer.add_scalar("time/epoch_seconds", epoch_duration, epoch)
+                writer.add_scalar("time/elapsed_minutes", (datetime.now() - t_training_start).total_seconds() / 60, epoch)
 
-                progress.write(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}")
+                progress.write(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f} ({epoch_duration:.1f}s)")
                 progress.set_postfix(train=f"{train_loss:.4f}", val=f"{val_loss:.4f}")
 
                 visualize_reconstructions(
@@ -216,7 +225,8 @@ def main():
 
                 scheduler.step()
 
-        print(f"Training complete. Best validation loss: {best_val_loss:.4f}")
+        total_duration = datetime.now() - t_training_start
+        print(f"Training complete in {total_duration.total_seconds() / 60:.1f}min. Best validation loss: {best_val_loss:.4f}")
 
     finally:
         writer.close()

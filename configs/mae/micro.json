@@ -1,0 +1,5 @@
+{
+  "d_decoder_embed": 64,
+  "n_decoder_blocks": 1,
+  "n_decoder_heads": 2
+}

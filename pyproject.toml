@@ -1,20 +1,27 @@
 [project]
-name = "pw-hiera"
+name = "hiera-2d"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "einops>=0.8.2",
+    "exponax>=0.2.0",
     "h5py>=3.15.1",
+    "jax[cuda13]>=0.9.1",
     "pydantic>=2.10.0",
     "tensorboard>=2.20.0",
     "torch>=2.7.1",
     "torchvision>=0.22.1",
     "tqdm>=4.67.1",
+    "setuptools==81.0",    # for tensorboard
 ]
 
 [project.scripts]
-train-mae = "pw_hiera.experiments.mae.train:main"
+train-mae = "hiera_2d.experiments.mae.train:main"
+train-ar = "hiera_2d.experiments.ar.train:main"
+eval-rollout = "hiera_2d.scripts.eval_rollout:main"
+dg-kolmogorov = "hiera_2d.scripts.generate_kolmogorov:main"
 
 
 [build-system]

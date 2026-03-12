@@ -4,12 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pw_hiera.hiera.types import Model
+from hiera_2d.hiera.types import Model
 
 from .blocks import Mlp
 from .model import Hiera
 from .reroll import undo_windowing
-from .token_ops import MASK_KEEP, MASK_MASK, broadcast_mask, compute_patch_stats, patchify
+from .token_ops import MASK_KEEP, MASK_MASK, broadcast_mask, compute_patch_stats, patchify, unpatchify
 
 
 def validate_mae_encoder_compatibility(encoder: Hiera):
@@ -355,6 +355,26 @@ class HieraMAE(nn.Module):
         loss = F.mse_loss(pred_masked, label)
 
         return loss, pred_masked, label
+
+    def decode_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Decode flat encoder tokens to pixel space (no masking).
+
+        Args:
+            tokens: (B, N, d_encoder_out) where N = H_tk * W_tk
+        Returns:
+            (B, C, H, W) reconstructed image
+        """
+        x = self.decoder_embed(tokens)
+        x = x + self.decoder_pos_embed
+
+        for blk in self.decoder_blocks:
+            x = blk(x)
+
+        x = self.decoder_norm(x)
+        x = self.decoder_pred(x)  # (B, N, stride_pred_px^2 * C)
+
+        h_tk, w_tk = self.shapes.sz_tk_final
+        return unpatchify(x, self.stride_pred_px, h_tk, w_tk, self.encoder_config.n_channels)
 
     def forward(
         self,

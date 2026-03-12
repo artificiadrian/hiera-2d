@@ -1,7 +1,7 @@
 import torch
 import torchvision.utils as vutils
 
-from pw_hiera.hiera.token_ops import compute_patch_stats, patchify, unpatchify
+from hiera_2d.hiera.token_ops import compute_patch_stats, patchify, unpatchify
 
 DEFAULT_FIXED_N_SAMPLES = 10
 PANEL_ORDER = ("original", "composite", "masked", "prediction")
