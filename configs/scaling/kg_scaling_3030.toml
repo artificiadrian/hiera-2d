@@ -24,10 +24,10 @@ data_path = "kolmogorov2d_256_variedRe.h5"
 
 output_root = "outputs/kg_scaling"
 
-# Architecture JSONs (kept as JSON; they are the model definitions, not sweep knobs).
-hiera_config = "configs/hiera/kg_small.json"
-mae_config = "configs/mae/small.json"
-ar_config = "configs/ar/micro.json"
+# Architecture configs (separate files: they are the model definitions, not sweep knobs).
+hiera_config = "configs/hiera/kg_small.toml"
+mae_config = "configs/mae/small.toml"
+ar_config = "configs/ar/micro.toml"
 
 # Small-N only: the equal-epoch control targets the budgets where the hypothesis
 # lives and where the 45/30 handicap most distorts the comparison. N500 is excluded.

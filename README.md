@@ -41,18 +41,18 @@ src/hiera_2d/
     scaling/        # data-scaling sweep driver (run_scaling.py) + typed config
   analysis/         # scaling_curve.py, spectral_plot.py, autocorrelation.py, loss_curve.py, spectra.py
   scripts/          # dg-kolmogorov generator, eval-rollout, compare-rollout
-configs/            # hiera/*.json, mae/*.json, ar/*.json (architectures) + scaling/*.toml (experiments)
+configs/            # hiera/*.toml, mae/*.toml, ar/*.toml (architectures) + scaling/*.toml (experiments)
 ```
 
 ## Configuration
 
 There are two layers of configuration.
 
-Architectures are small JSON configs, with schemas next to the code:
+Architectures are small TOML configs, with schemas next to the code:
 
-- Hiera encoder: [`hiera/model.py`](src/hiera_2d/hiera/model.py) (`HieraConfig`); see `configs/hiera/*.json`.
-- MAE decoder: [`hiera/mae.py`](src/hiera_2d/hiera/mae.py) (`MAEConfig`); see `configs/mae/*.json`.
-- AR head: [`experiments/ar/model.py`](src/hiera_2d/experiments/ar/model.py) (`ARHeadConfig`); see `configs/ar/*.json`.
+- Hiera encoder: [`hiera/model.py`](src/hiera_2d/hiera/model.py) (`HieraConfig`); see `configs/hiera/*.toml`.
+- MAE decoder: [`hiera/mae.py`](src/hiera_2d/hiera/mae.py) (`MAEConfig`); see `configs/mae/*.toml`.
+- AR head: [`experiments/ar/model.py`](src/hiera_2d/experiments/ar/model.py) (`ARHeadConfig`); see `configs/ar/*.toml`.
 
 Experiments are a single commented TOML file; see [`configs/scaling/kg_scaling.toml`](configs/scaling/kg_scaling.toml).
 It holds the dataset, the architecture-config paths, and the `[mae]`/`[ar]` hyperparameter blocks, so hyperparameters

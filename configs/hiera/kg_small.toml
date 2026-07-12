@@ -1,0 +1,29 @@
+sz_in_px = [256, 256]
+n_channels = 2
+d_embed = 48
+n_heads = 1
+sz_mask_unit_tk = [4, 4]
+stride_q_tk = [2, 2]
+dim_mul = 2.0
+head_mul = 2.0
+mlp_ratio = 4.0
+
+[patch_embed]
+kernel_px = [4, 4]
+stride_px = [4, 4]
+padding_px = [0, 0]
+
+[[stages]]
+n_blocks = 1
+is_mask_unit_attn = true
+pool_q = true
+
+[[stages]]
+n_blocks = 2
+is_mask_unit_attn = true
+pool_q = true
+
+[[stages]]
+n_blocks = 5
+is_mask_unit_attn = false
+pool_q = false

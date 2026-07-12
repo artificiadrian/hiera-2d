@@ -1,9 +1,9 @@
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import Field, field_validator
 
+from hiera_2d.experiments.config_io import load_toml
 from hiera_2d.experiments.data import DatasetType
 from hiera_2d.hiera.types import Model
 
@@ -89,14 +89,12 @@ class ExperimentConfig(Model):
 
 
 def load_experiment_config(path: Path) -> ExperimentConfig:
-    """Read a scaling-experiment TOML config (stdlib `tomllib`) and validate it.
+    """Read a scaling-experiment TOML config and validate it.
 
     The single loader used by run-scaling, train-mae, train-ar, scaling-curve, and
     spectral-plot so every script parses the experiment identically.
     """
-    data = tomllib.loads(path.read_text())
-
-    return ExperimentConfig.model_validate(data)
+    return load_toml(path, ExperimentConfig)
 
 
 # Every arm's run/directory name is budget-suffixed (`{arm}_e{epochs}`): the epoch

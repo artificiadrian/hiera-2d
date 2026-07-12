@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from hiera_2d.experiments.ar.model import ARHeadConfig
+from hiera_2d.experiments.config_io import load_toml
 from hiera_2d.experiments.data import DatasetType
 from hiera_2d.experiments.scaling.config import ArRun, ExperimentConfig, RunIdentity
 from hiera_2d.hiera.model import HieraConfig
@@ -76,18 +77,17 @@ def _parse_args(argv: list[str] | None = None):
 def build_ar_train_args(cfg: ExperimentConfig, run: RunIdentity) -> ArTrainArgs:
     """Resolve the fully-typed inputs for one AR run from the experiment config
     and the per-run identity: apply the `n_epochs` override, parse the AR-head
-    JSON, and select the encoder source — an MAE checkpoint (finetune) when
-    `run.mae_checkpoint` is set, else a random-init Hiera (scratch). No CLI, no
-    TOML reading here."""
+    config, and select the encoder source — an MAE checkpoint (finetune) when
+    `run.mae_checkpoint` is set, else a random-init Hiera (scratch). No CLI here."""
     ar_run = cfg.ar if run.n_epochs is None else cfg.ar.model_copy(update={"n_epochs": run.n_epochs})
 
-    ar_head = ARHeadConfig.model_validate_json(cfg.ar_config.read_text()) if cfg.ar_config else ARHeadConfig()
+    ar_head = load_toml(cfg.ar_config, ARHeadConfig) if cfg.ar_config else ARHeadConfig()
     ar_head = ar_head.model_copy(update={"predict_residual": ar_run.predict_residual})
 
     if run.mae_checkpoint is not None:
         encoder: EncoderSource = PretrainedEncoderSource(mae_checkpoint=run.mae_checkpoint)
     else:
-        encoder = ScratchEncoderSource(hiera=HieraConfig.model_validate_json(cfg.hiera_config.read_text()))
+        encoder = ScratchEncoderSource(hiera=load_toml(cfg.hiera_config, HieraConfig))
 
     return ArTrainArgs(
         ar_head=ar_head,

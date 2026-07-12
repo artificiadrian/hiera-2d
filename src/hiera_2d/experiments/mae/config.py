@@ -2,6 +2,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+from hiera_2d.experiments.config_io import load_toml
 from hiera_2d.experiments.data import DatasetType
 from hiera_2d.experiments.scaling.config import ExperimentConfig, MaeRun, RunIdentity
 from hiera_2d.hiera.mae import MAEConfig
@@ -46,10 +47,10 @@ def _parse_args(argv: list[str] | None = None):
 
 def build_mae_train_args(cfg: ExperimentConfig, run: RunIdentity) -> MaeTrainArgs:
     """Resolve the fully-typed inputs for one MAE run from the experiment config
-    and the per-run identity: parse the architecture JSONs, pin dataset identity,
-    and place the run at `out_dir / name`. No CLI, no TOML reading here."""
-    hiera = HieraConfig.model_validate_json(cfg.hiera_config.read_text())
-    mae = MAEConfig.model_validate_json(cfg.mae_config.read_text())
+    and the per-run identity: parse the architecture configs, pin dataset identity,
+    and place the run at `out_dir / name`. No CLI here."""
+    hiera = load_toml(cfg.hiera_config, HieraConfig)
+    mae = load_toml(cfg.mae_config, MAEConfig)
 
     return MaeTrainArgs(
         hiera=hiera,
