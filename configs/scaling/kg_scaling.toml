@@ -26,25 +26,9 @@ hiera_config = "configs/hiera/kg_small.toml"
 mae_config = "configs/mae/small.toml"
 ar_config = "configs/ar/micro.toml"
 
-# Training-budget ladder: the sweep trains one arm-triple per N. The point of the
-# whole experiment is that the finetune-vs-scratch gap widens at small N.
-n_trajectories = [50, 100, 250, 500]
-
-# Epoch budget of the scratch (random-init) arm, as a multiple of ar.n_epochs.
-#
-# 1.5 handicaps the comparison AGAINST the hypothesis on purpose: the from-scratch
-# baseline gets 50% more finetuning epochs (45 vs 30) than the pretrained arm. A
-# from-scratch model converges more slowly (cf. Rethinking ImageNet Pre-training,
-# He et al. 2019), so an equal-epoch baseline risks reporting a pretraining win
-# that is really an optimization-budget win. When pretraining wins anyway, the
-# result is conservative.
-#
-# This value must match the checkpoints on disk: run-scaling skips a run when its
-# best_model.pt exists and does NOT check the epoch count, so changing this without
-# deleting the affected runs silently mislabels them. It must also be uniform across
-# every N, or the epoch budget confounds with the data budget and the headline trend
-# (gap narrowing as N grows) becomes uninterpretable.
-scratch_epoch_mult = 1.5
+# Data-budget ladder: the sweep trains one arm-triple per N. The point of the whole
+# experiment is how the finetune-vs-scratch gap moves as the data budget grows.
+n_trajectories = [50, 100, 250]
 
 [mae]
 n_epochs = 120
@@ -57,6 +41,9 @@ weight_decay = 0.05
 seed = 42
 
 [ar]
+# Equal finetuning budget: the finetune and from-scratch arms both train for this
+# many epochs (the standard transfer protocol, pretraining compute treated as
+# amortized), so nothing but the encoder init distinguishes them.
 n_epochs = 30
 n_warmup_epochs = 5
 # Pushforward rollout length during training: each window feeds unroll_steps+1

@@ -15,7 +15,6 @@ from hiera_2d.experiments.scaling.config import (
     finetune_run_name,
     load_experiment_config,
     mae_run_name,
-    scratch_epochs,
     scratch_run_name,
 )
 
@@ -53,9 +52,9 @@ def plan_runs(cfg: ExperimentConfig) -> tuple[RunSpec, ...]:
     """Pure: expand the config into the flat, ordered list of runs. Per N the
     order is mae -> finetune -> scratch (finetune consumes the MAE checkpoint).
 
-    Only the per-run identity (n_trajectories, output dir, name, encoder source,
-    epoch override) distinguishes the runs; every run reads the same typed `cfg`
-    for its hyperparameters.
+    Only the per-run identity (n_trajectories, output dir, name, encoder source)
+    distinguishes the runs; every run reads the same typed `cfg` for its
+    hyperparameters, so the finetune and scratch arms share one epoch budget.
     """
     specs: list[RunSpec] = []
 
@@ -79,9 +78,7 @@ def plan_runs(cfg: ExperimentConfig) -> tuple[RunSpec, ...]:
 
         scratch = RunSpec(
             kind=RunKind.AR,
-            identity=RunIdentity(
-                n_trajectories=n, out_dir=n_dir, name=scratch_run_name(cfg), n_epochs=scratch_epochs(cfg)
-            ),
+            identity=RunIdentity(n_trajectories=n, out_dir=n_dir, name=scratch_run_name(cfg)),
         )
 
         specs += [mae, finetune, scratch]
@@ -109,9 +106,9 @@ def _run_in_process(kind: RunKind, cfg: ExperimentConfig, identity: RunIdentity)
 
 def _planned_epochs(cfg: ExperimentConfig, spec: RunSpec) -> int:
     """The epoch budget the plan asks of one run: MAE -> `cfg.mae.n_epochs`;
-    AR -> the identity's `n_epochs` override if set (the scratch fairness bump),
-    else `cfg.ar.n_epochs`. The value recorded into the checkpoint, so the skip
-    check can compare it against what an existing checkpoint was trained under."""
+    AR -> the identity's `n_epochs` override if set, else `cfg.ar.n_epochs`. The
+    value recorded into the checkpoint, so the skip check can compare it against
+    what an existing checkpoint was trained under."""
     if spec.kind is RunKind.MAE:
         return cfg.mae.n_epochs
 

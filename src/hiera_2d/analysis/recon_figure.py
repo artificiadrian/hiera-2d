@@ -157,10 +157,17 @@ def main(argv: Sequence[str] | None = None):
     p.add_argument("--checkpoint", type=Path, required=True, help="MAE best_model.pt")
     p.add_argument("--data-path", type=Path, default=None, help="Defaults to the checkpoint's own dataset")
     p.add_argument("--sample", type=int, default=0, help="Index into the validation split")
-    p.add_argument("-o", "--output-dir", type=Path, default=Path("outputs/analysis_recon"))
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Output PNG (default: outputs/analysis_recon/recon_sample{sample}.png)",
+    )
     args = p.parse_args(argv)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out_path: Path = args.output or Path(f"outputs/analysis_recon/recon_sample{args.sample}.png")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     loaded = load_mae(args.checkpoint, device)
@@ -171,7 +178,6 @@ def main(argv: Sequence[str] | None = None):
     mean, std = dataset.norm_stats["mean"], dataset.norm_stats["std"]
 
     panels = build_panels(loaded, frame, mean, std, device)
-    out_path = args.output_dir / f"recon_sample{args.sample}.png"
     plot_reconstruction(
         panels,
         out_path,

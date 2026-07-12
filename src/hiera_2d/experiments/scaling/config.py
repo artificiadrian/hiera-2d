@@ -18,7 +18,7 @@ class RunIdentity:
     the typed argument to `train_mae`/`train_ar` — no CLI-string round-trip.
     The run directory is `out_dir / name`; `mae_checkpoint` set selects the AR
     finetune arm (encoder loaded from that MAE), `None` the from-scratch arm;
-    `n_epochs` set overrides the config's AR epoch budget (the scratch fairness bump).
+    `n_epochs` set overrides the config's AR epoch budget (`train-ar --n-epochs`).
     """
 
     n_trajectories: int
@@ -44,8 +44,7 @@ class MaeRun(Model):
 
 class ArRun(Model):
     """AR head hyperparameters — the `[ar]` block. Shared by the finetune and
-    scratch arms; the scratch arm scales `n_epochs` by
-    `ExperimentConfig.scratch_epoch_mult` (train-ar's `--n-epochs` override)."""
+    scratch arms, which train under the same epoch budget."""
 
     n_epochs: int = Field(gt=0)
     n_warmup_epochs: int = Field(gt=0)
@@ -76,7 +75,6 @@ class ExperimentConfig(Model):
     n_trajectories: tuple[int, ...]
     mae: MaeRun
     ar: ArRun
-    scratch_epoch_mult: float = 1.5
 
     @field_validator("data_path", "hiera_config", "mae_config", "ar_config")
     @classmethod
@@ -97,20 +95,11 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     return load_toml(path, ExperimentConfig)
 
 
-# Every arm's run/directory name is budget-suffixed (`{arm}_e{epochs}`): the epoch
-# budget is a property of every run, not just scratch, and encoding it uniformly
-# keeps run-scaling's skip honest — a run is reused only when a same-budget
-# checkpoint sits at its exact name, so any budget change lands in a fresh dir
-# instead of silently reusing a differently-trained one. Names that happen to be
-# equal across two protocols (mae_e120, finetune_e30) are still shared and skipped;
-# only the arm whose budget actually differs (scratch_e30 vs scratch_e45) splits.
-# Single source for run-scaling and the analysis scripts.
-def scratch_epochs(cfg: ExperimentConfig) -> int:
-    """The scratch arm's epoch budget: the AR budget scaled by the fairness bump
-    `scratch_epoch_mult`, rounded to a whole number of epochs."""
-    return round(cfg.ar.n_epochs * cfg.scratch_epoch_mult)
-
-
+# Every arm's run/directory name is budget-suffixed (`{arm}_e{epochs}`), which keeps
+# run-scaling's skip honest — a run is reused only when a same-budget checkpoint sits
+# at its exact name, so any budget change lands in a fresh dir instead of silently
+# reusing a differently-trained one. Single source for run-scaling and the analysis
+# scripts.
 def mae_run_name(cfg: ExperimentConfig) -> str:
     """The MAE pretrain arm's run/directory name, budget-suffixed (e.g. `mae_e120`)."""
     return f"mae_e{cfg.mae.n_epochs}"
@@ -122,7 +111,6 @@ def finetune_run_name(cfg: ExperimentConfig) -> str:
 
 
 def scratch_run_name(cfg: ExperimentConfig) -> str:
-    """The scratch arm's run/directory name, budget-suffixed (e.g. `scratch_e45`),
-    so two `scratch_epoch_mult` protocols coexist under one `output_root` instead
-    of one silently reusing the other's checkpoints."""
-    return f"scratch_e{scratch_epochs(cfg)}"
+    """The from-scratch arm's run/directory name, budget-suffixed (e.g. `scratch_e30`);
+    it trains under the same AR epoch budget as the finetune arm."""
+    return f"scratch_e{cfg.ar.n_epochs}"

@@ -136,13 +136,13 @@ def main(argv: Sequence[str] | None = None):
     p = argparse.ArgumentParser(description="Plot the loss curve of a training run")
     p.add_argument("run_dir", type=Path, help="Run directory holding the TensorBoard event file")
     p.add_argument("--title", default="MAE pretraining on Kolmogorov flow")
-    p.add_argument("-o", "--output-dir", type=Path, default=Path("outputs/analysis_loss"))
+    p.add_argument("-o", "--output", type=Path, default=Path("outputs/analysis_loss/loss_curve.png"))
     args = p.parse_args(argv)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out_path: Path = args.output
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     history = load_loss_history(args.run_dir)
-    out_path = args.output_dir / "loss_curve.png"
     plot_loss_curve(history, out_path, args.title)
 
     best = int(np.argmin(history.val))

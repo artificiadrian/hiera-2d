@@ -208,10 +208,11 @@ def main(argv: Sequence[str] | None = None):
         default=None,
         help="Candidate saved-frame spacing (physical time) to diagnose C at",
     )
-    p.add_argument("-o", "--output-dir", type=Path, default=Path("outputs/analysis_autocorr"))
+    p.add_argument("-o", "--output", type=Path, default=Path("outputs/analysis_autocorr/autocorrelation.png"))
     args = p.parse_args(argv)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out_path: Path = args.output
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = load_trajectories(args.data_path, args.max_traj)
     print(f"Loaded {data.trajectories.shape[0]} trajectories from {args.data_path} (output_dt={data.output_dt:.4g})")
@@ -220,7 +221,6 @@ def main(argv: Sequence[str] | None = None):
     threshold = 1.0 / np.e
     tau_e = decorrelation_time(result, threshold)
 
-    out_path = args.output_dir / "autocorrelation.png"
     plot_autocorrelation(result, threshold, tau_e, out_path)
 
     if tau_e is None:

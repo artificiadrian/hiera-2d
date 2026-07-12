@@ -145,7 +145,13 @@ def parse_args():
     p.add_argument("--split", type=Split, choices=list(Split), default=Split.VAL)
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--n-steps", type=int, default=99)
-    p.add_argument("-o", "--output-dir", type=Path, default=None, help="Where to write the figure (default: N{n} dir)")
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Output PNG (default: <output_root>/N{n}/spectrum_N{n}.png)",
+    )
     return p.parse_args()
 
 
@@ -178,9 +184,8 @@ def main():
 
     spectra = _stream_loglog_spectra(ft_ckpt, sc_ckpt, dataset, mean, std, args.start, args.n_steps, device)
 
-    out_dir = args.output_dir or n_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "spectrum_loglog.png"
+    out_path: Path = args.output or n_dir / f"spectrum_N{args.n}.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     plot_loglog_spectrum(spectra, out_path)
     print(f"Saved {out_path}")
 
