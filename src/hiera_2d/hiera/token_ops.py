@@ -16,10 +16,12 @@ def patchify(x: torch.Tensor, patch_size: int):
 
     x = x.permute(0, 2, 3, 1)  # (B, H, W, C)
 
-    # unfold slides a window of size patch_size across H and W dimensions with stride of patch_size, thus giving us non-overlapping patches
+    # unfold slides a window of size patch_size across the H and W dims with stride patch_size,
+    # giving us non-overlapping patches
     patches = x.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)  # (B, H/ps, W/ps, C, ps, ps)
 
-    # first flatten the H/W grid into a sequence of patches, then flatten the patch dimension (C, ps, ps) into single dim of ps*ps*C size
+    # first flatten the H/W grid into a sequence of patches, then flatten the patch dimension
+    # (C, ps, ps) into a single dim of size ps*ps*C
     # thus, we have a sequence of flat patches, where each patch is a vector of pixel vals
     return patches.flatten(1, 2).flatten(2)
 

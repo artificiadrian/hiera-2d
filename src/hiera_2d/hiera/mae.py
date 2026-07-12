@@ -4,12 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from hiera_2d.hiera.blocks import Mlp
+from hiera_2d.hiera.model import Hiera
+from hiera_2d.hiera.reroll import undo_windowing
+from hiera_2d.hiera.token_ops import MASK_KEEP, MASK_MASK, broadcast_mask, compute_patch_stats, patchify
 from hiera_2d.hiera.types import Model
-
-from .blocks import Mlp
-from .model import Hiera
-from .reroll import undo_windowing
-from .token_ops import MASK_KEEP, MASK_MASK, broadcast_mask, compute_patch_stats, patchify, unpatchify
 
 
 def validate_mae_encoder_compatibility(encoder: Hiera):
@@ -31,11 +30,9 @@ def apply_fusion_head(head: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
     B, N = x.shape[0:2]
 
-    x = x.reshape(
-        B * N, *x.shape[2:]
-    ).movedim(
-        -1, 1
-    )  # move n_mu into batch dim s.t. convolution can be applied (this processes each mask unit independently as if it were its own batch element), and move channel dim to expected position for conv (B * n_mu, C, mu_h, mu_w)
+    # move n_mu into the batch dim so the convolution can be applied (processes each mask unit
+    # independently as if it were its own batch element), and move channel dim to the conv position
+    x = x.reshape(B * N, *x.shape[2:]).movedim(-1, 1)  # (B * n_mu, C, mu_h, mu_w)
     x = head(x)
 
     # move channel dim back and restore batch dim
@@ -117,7 +114,8 @@ class HieraMAE(nn.Module):
                 curr_dim = int(curr_dim * self.encoder_config.dim_mul)
 
             self.multi_scale_fusion_heads.append(
-                # fusion head is just a conv that maps from curr_dim to d_encoder_out with a kernel that reduces from curr_mu_size to final mu size
+                # fusion head is just a conv that maps from curr_dim to d_encoder_out with a kernel
+                # that reduces from curr_mu_size to the final mu size
                 nn.Conv2d(
                     curr_dim,
                     d_encoder_out,
@@ -210,46 +208,15 @@ class HieraMAE(nn.Module):
         # reorder using the shuffle indices to get final mask
         return torch.gather(mask, dim=1, index=ids_restore)
 
-    def _resolve_mask(
-        self,
-        x: torch.Tensor,
-        mask_ratio: float,
-        mask: torch.Tensor | None,
-    ) -> torch.Tensor:
-        if mask is None:
-            if not (0.0 < mask_ratio < 1.0):
-                raise ValueError(f"mask_ratio must be in (0, 1) when mask is not provided, got {mask_ratio}")
-
-            # generate random mask
-            return self.get_random_mask(x, mask_ratio)
-
-        # validate provided mask
-
-        if mask.dtype != torch.bool or mask.ndim != 2:
-            raise ValueError("mask must be a boolean tensor of shape (B, n_mask_units)")
-
-        expected_shape = (x.shape[0], self.shapes.n_mu)
-
-        if mask.shape != expected_shape:
-            raise ValueError(f"mask shape must be {expected_shape}, got {tuple(mask.shape)}")
-
-        keep_counts = mask.sum(dim=1)
-        if not torch.equal(keep_counts, keep_counts[:1].expand_as(keep_counts)):
-            raise ValueError("all samples in a batch must keep the same number of mask units")
-
-        return mask
-
-    def forward_encoder(
-        self,
-        x: torch.Tensor,
-        mask_ratio: float,
-        mask: torch.Tensor | None = None,
-    ):
+    def forward_encoder(self, x: torch.Tensor, mask_ratio: float):
         """Encode input with masking and multi-scale fusion."""
-        mask = self._resolve_mask(x, mask_ratio, mask)
+        if not (0.0 < mask_ratio < 1.0):
+            raise ValueError(f"mask_ratio must be in (0, 1), got {mask_ratio}")
+
+        mask = self.get_random_mask(x, mask_ratio)
 
         # Get multi-scale representations from encoder
-        _, intermediates = self.encoder.forward(x, mask, return_intermediates=True)
+        _, intermediates = self.encoder.forward_with_intermediates(x, mask)
 
         # Only use features from q_pool stages + final
         # Resolution unchanged after q_pool stages happened, so skip those intermediates
@@ -319,13 +286,8 @@ class HieraMAE(nn.Module):
 
         return x, pred_mask
 
-    def get_pixel_label(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-        normalize: bool = True,
-    ):
-        """Get pixel-level reconstruction target."""
+    def get_pixel_label(self, x: torch.Tensor, mask: torch.Tensor):
+        """Get pixel-level reconstruction target (per-patch normalized)."""
         ps = self.stride_pred_px
 
         # patchify to get (B, H'*W', ps^2 * n_channels)
@@ -334,12 +296,9 @@ class HieraMAE(nn.Module):
         # Select masked patches (we only predict those!)
         label = label[mask == MASK_MASK]
 
-        if normalize:
-            mean, var = compute_patch_stats(label)
-            # normalize labels on a per-patch basis and add small epsilon for stability
-            label = (label - mean) / (var + 1e-6).sqrt()
-
-        return label
+        mean, var = compute_patch_stats(label)
+        # normalize labels on a per-patch basis and add small epsilon for stability
+        return (label - mean) / (var + 1e-6).sqrt()
 
     def forward_loss(
         self,
@@ -356,34 +315,13 @@ class HieraMAE(nn.Module):
 
         return loss, pred_masked, label
 
-    def decode_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
-        """Decode flat encoder tokens to pixel space (no masking).
-
-        Args:
-            tokens: (B, N, d_encoder_out) where N = H_tk * W_tk
-        Returns:
-            (B, C, H, W) reconstructed image
-        """
-        x = self.decoder_embed(tokens)
-        x = x + self.decoder_pos_embed
-
-        for blk in self.decoder_blocks:
-            x = blk(x)
-
-        x = self.decoder_norm(x)
-        x = self.decoder_pred(x)  # (B, N, stride_pred_px^2 * C)
-
-        h_tk, w_tk = self.shapes.sz_tk_final
-        return unpatchify(x, self.stride_pred_px, h_tk, w_tk, self.encoder_config.n_channels)
-
     def forward(
         self,
         x: torch.Tensor,
         mask_ratio: float = 0.6,
-        mask: torch.Tensor | None = None,
     ):
         # encode
-        latent, mask = self.forward_encoder(x, mask_ratio, mask)
+        latent, mask = self.forward_encoder(x, mask_ratio)
 
         # decode with latents and mask
         pred, pred_mask = self.forward_decoder(latent, mask)

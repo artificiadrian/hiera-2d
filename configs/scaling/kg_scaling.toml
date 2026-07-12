@@ -1,0 +1,73 @@
+# Kolmogorov data-scaling sweep. One file drives the whole experiment: per N in
+# `n_trajectories`, run-scaling launches an MAE pretrain, an AR finetune off that
+# MAE, and an AR from-scratch baseline. Every script (run-scaling, train-mae,
+# train-ar, scaling-curve, spectral-plot) reads this same file via the shared
+# tomllib loader, so the hyperparameters live in exactly one place.
+
+dataset = "kolmogorov"
+
+# Flat HDF5 from dg-kolmogorov: 256x256 grid, 625 seeds, 100 recorded frames each.
+# A diverse Re family, not a single flow: each trajectory draws its own Reynolds
+# number (20 values spanning 3000..5000) and its own burn-in (20..40 s), so the
+# dataset carries variety rather than 625 samples of one attractor. Per-trajectory
+# provenance lives in the re / burn_time / solver_dt datasets.
+#
+# The recorded frame spacing is a uniform 0.1 s (dt * keep-every). That 0.1 s is
+# the AR model's one-step prediction target: small enough to stay learnable
+# (consecutive frames ~0.95 correlated), well below the ~1 s decorrelation time.
+# Four trajectories that diverged at dt=1e-3 were refined to dt=5e-4 with
+# keep-every doubled, which leaves the 0.1 s spacing invariant.
+data_path = "kolmogorov2d_256_variedRe.h5"
+
+output_root = "outputs/kg_scaling"
+
+# Architecture JSONs (kept as JSON; they are the model definitions, not sweep knobs).
+hiera_config = "configs/hiera/kg_small.json"
+mae_config = "configs/mae/small.json"
+ar_config = "configs/ar/micro.json"
+
+# Training-budget ladder: the sweep trains one arm-triple per N. The point of the
+# whole experiment is that the finetune-vs-scratch gap widens at small N.
+n_trajectories = [50, 100, 250, 500]
+
+# Epoch budget of the scratch (random-init) arm, as a multiple of ar.n_epochs.
+#
+# 1.5 handicaps the comparison AGAINST the hypothesis on purpose: the from-scratch
+# baseline gets 50% more finetuning epochs (45 vs 30) than the pretrained arm. A
+# from-scratch model converges more slowly (cf. Rethinking ImageNet Pre-training,
+# He et al. 2019), so an equal-epoch baseline risks reporting a pretraining win
+# that is really an optimization-budget win. When pretraining wins anyway, the
+# result is conservative.
+#
+# This value must match the checkpoints on disk: run-scaling skips a run when its
+# best_model.pt exists and does NOT check the epoch count, so changing this without
+# deleting the affected runs silently mislabels them. It must also be uniform across
+# every N, or the epoch budget confounds with the data budget and the headline trend
+# (gap narrowing as N grows) becomes uninterpretable.
+scratch_epoch_mult = 1.5
+
+[mae]
+n_epochs = 120
+n_warmup_epochs = 15
+batch_size = 64
+mask_ratio = 0.6
+lr = 1.5e-4
+min_lr = 1e-6
+weight_decay = 0.05
+seed = 42
+
+[ar]
+n_epochs = 30
+n_warmup_epochs = 5
+# Pushforward rollout length during training: each window feeds unroll_steps+1
+# frames, unrolling the model from its own (detached) predictions so it learns to
+# correct autoregressive drift without backprop-through-time.
+unroll_steps = 8
+batch_size = 64
+lr = 1e-4
+min_lr = 1e-6
+weight_decay = 0.01
+# Predict the residual x_{t+1} - x_t instead of the absolute next frame.
+predict_residual = true
+seed = 42
+amp = true

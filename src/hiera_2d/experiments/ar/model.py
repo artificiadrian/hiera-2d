@@ -14,6 +14,7 @@ class ARHeadConfig(Model):
     n_blocks: int = 4
     n_heads: int = 8
     mlp_ratio: float = 4.0
+    predict_residual: bool = False
 
 
 class HieraAR(nn.Module):
@@ -36,16 +37,13 @@ class HieraAR(nn.Module):
         self.proj_in = nn.Linear(d_enc, config.d_head)
         self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, config.d_head))
 
-        self.blocks = nn.ModuleList([
-            DecoderBlock(config.d_head, config.n_heads, config.mlp_ratio)
-            for _ in range(config.n_blocks)
-        ])
+        self.blocks = nn.ModuleList(
+            [DecoderBlock(config.d_head, config.n_heads, config.mlp_ratio) for _ in range(config.n_blocks)]
+        )
 
         self.norm = nn.LayerNorm(config.d_head)
 
-        stride = encoder.config.patch_embed.stride_px[0] * (
-            encoder.config.stride_q_tk[0] ** self.shapes.n_q_pool
-        )
+        stride = encoder.config.patch_embed.stride_px[0] * (encoder.config.stride_q_tk[0] ** self.shapes.n_q_pool)
         self.stride_pred_px = stride
         self.pred = nn.Linear(config.d_head, stride**2 * encoder.config.n_channels)
 
@@ -64,7 +62,7 @@ class HieraAR(nn.Module):
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode a frame. Returns flattened spatial tokens."""
-        _, intermediates = self.encoder(x, mask=None, return_intermediates=True)
+        _, intermediates = self.encoder.forward_with_intermediates(x, mask=None)
         feat = intermediates[-1]  # (B, H', W', d_enc)
         B, H, W, D = feat.shape
         return feat.reshape(B, H * W, D)
@@ -96,12 +94,17 @@ class HieraAR(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Predict next frame from current frame.
 
+        With predict_residual the head predicts the change x_{t+1} - x_t and we
+        add it back to the input. At small dt this removes the trivial
+        "copy the input" solution and concentrates the signal on the dynamics.
+
         Args:
             x: (B, C, H, W) current frame
         Returns:
             (B, C, H, W) predicted next frame
         """
-        return self.predict(self.encode(x))
+        out = self.predict(self.encode(x))
+        return x + out if self.config.predict_residual else out
 
     @torch.no_grad()
     def rollout(self, x: torch.Tensor, n_steps: int) -> torch.Tensor:

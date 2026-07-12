@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .types import Int2d, Model
+from hiera_2d.hiera.types import Int2d, Model
 
 
 class PatchEmbedConfig(Model):

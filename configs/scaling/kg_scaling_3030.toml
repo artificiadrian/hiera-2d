@@ -1,0 +1,66 @@
+# Kolmogorov data-scaling sweep — EQUAL-EPOCH (30/30) control.
+#
+# Identical to kg_scaling.toml except scratch_epoch_mult = 1.0: the from-scratch
+# baseline gets the SAME finetuning budget as the pretrained arm (30 epochs each),
+# the standard transfer protocol. This is the clean test of the small-N comparison:
+# the main sweep's 1.5x handicap (scratch 45 ep) advantages the baseline most where
+# data is scarce, which is exactly where the pretraining hypothesis lives, so the
+# handicap may be masking (or inventing) the small-N result. Here both arms match.
+#
+# Reuse by design: output_root is shared with the main sweep, so run-scaling SKIPS
+# the already-trained mae and finetune arms and trains only the new scratch_e30
+# baselines (the budget suffix keeps them separate from the existing scratch_e45).
+# N500 is dropped: its mae/finetune do not exist yet (the sweep OOM'd before them),
+# and the small-N comparison is the point. The scratch_e30 arms are AR training on
+# <=250 trajectories (~13 GB) + lazy val, so this run fits in RAM with the desktop up.
+#
+# After it finishes, compare with:
+#   scaling-curve  configs/scaling/kg_scaling_3030.toml
+#   spectral-plot  configs/scaling/kg_scaling_3030.toml --n 50   (and 100, 250)
+
+dataset = "kolmogorov"
+
+data_path = "kolmogorov2d_256_variedRe.h5"
+
+output_root = "outputs/kg_scaling"
+
+# Architecture JSONs (kept as JSON; they are the model definitions, not sweep knobs).
+hiera_config = "configs/hiera/kg_small.json"
+mae_config = "configs/mae/small.json"
+ar_config = "configs/ar/micro.json"
+
+# Small-N only: the equal-epoch control targets the budgets where the hypothesis
+# lives and where the 45/30 handicap most distorts the comparison. N500 is excluded.
+n_trajectories = [50, 100, 250]
+
+# Equal finetuning budget: scratch trains for the same 30 epochs as finetune. Removes
+# the optimization-budget confound from the pretrained-vs-scratch comparison. Produces
+# scratch_e30 run dirs (distinct from the main sweep's scratch_e45), so both protocols
+# coexist under one output_root and run-scaling reuses the shared mae/finetune arms.
+scratch_epoch_mult = 1.0
+
+[mae]
+n_epochs = 120
+n_warmup_epochs = 15
+batch_size = 64
+mask_ratio = 0.6
+lr = 1.5e-4
+min_lr = 1e-6
+weight_decay = 0.05
+seed = 42
+
+[ar]
+n_epochs = 30
+n_warmup_epochs = 5
+# Pushforward rollout length during training: each window feeds unroll_steps+1
+# frames, unrolling the model from its own (detached) predictions so it learns to
+# correct autoregressive drift without backprop-through-time.
+unroll_steps = 8
+batch_size = 64
+lr = 1e-4
+min_lr = 1e-6
+weight_decay = 0.01
+# Predict the residual x_{t+1} - x_t instead of the absolute next frame.
+predict_residual = true
+seed = 42
+amp = true

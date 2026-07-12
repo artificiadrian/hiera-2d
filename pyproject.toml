@@ -1,11 +1,10 @@
 [project]
 name = "hiera-2d"
 version = "0.1.0"
-description = "Add your description here"
+description = "2D Hiera + MAE pretraining for autoregressive neural PDE surrogates"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "einops>=0.8.2",
     "exponax>=0.2.0",
     "h5py>=3.15.1",
     "jax[cuda13]>=0.9.1",
@@ -21,8 +20,18 @@ dependencies = [
 train-mae = "hiera_2d.experiments.mae.train:main"
 train-ar = "hiera_2d.experiments.ar.train:main"
 eval-rollout = "hiera_2d.scripts.eval_rollout:main"
+compare-rollout = "hiera_2d.scripts.compare_rollout:main"
 dg-kolmogorov = "hiera_2d.scripts.generate_kolmogorov:main"
+run-scaling = "hiera_2d.experiments.scaling.run_scaling:main"
+scaling-curve = "hiera_2d.analysis.scaling_curve:main"
+spectral-plot = "hiera_2d.analysis.spectral_plot:main"
+autocorrelation = "hiera_2d.analysis.autocorrelation:main"
+loss-curve = "hiera_2d.analysis.loss_curve:main"
+recon-figure = "hiera_2d.analysis.recon_figure:main"
 
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["uv_build>=0.8.3,<0.9.0"]

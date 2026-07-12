@@ -38,8 +38,14 @@ class HieraShapes:
         pool_factors = tuple(s**n_q_pool for s in stride_q_tk)
         if any(t % p != 0 for t, p in zip(sz_tk, pool_factors, strict=True)):
             raise ValueError("sz_tk must be divisible by stride_q_tk ** n_q_pool")
-        if any(m % p != 0 for m, p in zip(sz_mask_unit_tk, pool_factors, strict=True)):
-            raise ValueError("sz_mask_unit_tk must be divisible by stride_q_tk ** n_q_pool")
+        # Unroll groups tokens strictly by the q-pool schedule (product = stride_q_tk ** n_q_pool),
+        # and that grouping IS the mask unit. They must therefore be equal, else masking/mask-unit
+        # attention windows along a different grid than Unroll produced (silent spatial scrambling).
+        if tuple(sz_mask_unit_tk) != pool_factors:
+            raise ValueError(
+                f"sz_mask_unit_tk {tuple(sz_mask_unit_tk)} must equal stride_q_tk ** n_q_pool "
+                f"{pool_factors} (the Unroll grouping); pick mask unit = q_stride^(num pool stages)"
+            )
 
         self.sz_in_px = sz_in_px
         self.stride_patch_px = stride_patch_px

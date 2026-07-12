@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 import torchvision.utils as vutils
 
@@ -7,7 +9,66 @@ DEFAULT_FIXED_N_SAMPLES = 10
 PANEL_ORDER = ("original", "composite", "masked", "prediction")
 
 
-def _normalize_for_vis(reference: torch.Tensor, *tensors: torch.Tensor):
+@dataclass(frozen=True, slots=True)
+class Reconstruction:
+    """An MAE forward pass unpacked into image-space fields, all `(B, C, H, W)`.
+
+    Values are in the model's input units (i.e. still normalized). `prediction` is
+    the decoder output everywhere, including where the encoder could see;
+    `composite` keeps the original wherever it was visible and substitutes the
+    prediction only where it was masked -- the panel that actually shows what the
+    model inferred. `visible` is the mask-unit indicator upsampled to pixels: 1
+    where the pixel was fed to the encoder, 0 where it was held out.
+    """
+
+    original: torch.Tensor
+    prediction: torch.Tensor
+    composite: torch.Tensor
+    visible: torch.Tensor
+
+
+def reconstruct(model, x_batch: torch.Tensor, mask_ratio: float) -> Reconstruction:
+    """Run the MAE end to end and return its image-space fields.
+
+    The decoder emits per-patch predictions with the patch's own mean/variance
+    divided out (the normalized-pixel target), so they are put back on the scale
+    of the true patch statistics before unpatchifying -- otherwise every patch
+    would come back standardized and the field would be visually flat.
+    """
+    latent, mask = model.forward_encoder(x_batch, mask_ratio=mask_ratio)
+    pred, pred_mask = model.forward_decoder(latent, mask)
+
+    batch = pred.shape[0]
+    stride_pred_px = model.stride_pred_px
+    n_channels = model.encoder_config.n_channels
+    h_tk, w_tk = model.shapes.sz_tk_final
+
+    x_patches = patchify(x_batch, stride_pred_px)
+    patch_mean, patch_var = compute_patch_stats(x_patches)
+    pred = pred * (patch_var + 1e-6).sqrt() + patch_mean
+
+    prediction = unpatchify(pred, stride_pred_px, h_tk, w_tk, n_channels)
+
+    h_mu, w_mu = model.shapes.sz_mu
+    visible = torch.nn.functional.interpolate(
+        mask.float().reshape(batch, 1, h_mu, w_mu),
+        size=x_batch.shape[-2:],
+        mode="nearest",
+    )
+
+    # The decoder's own kept-token mask lives on the (coarser) prediction grid, so
+    # the composite is stitched with that one rather than with `visible`.
+    kept = torch.nn.functional.interpolate(
+        pred_mask.float().reshape(batch, 1, h_tk, w_tk),
+        size=x_batch.shape[-2:],
+        mode="nearest",
+    )
+    composite = x_batch * kept + prediction * (1.0 - kept)
+
+    return Reconstruction(original=x_batch, prediction=prediction, composite=composite, visible=visible)
+
+
+def normalize_for_vis(reference: torch.Tensor, *tensors: torch.Tensor):
     # normalize all tensors to [0,1] range for viz based on reference tensor stats (e.g. original image)
     reduce_dims = tuple(range(1, reference.ndim))
     ref_min = reference.amin(dim=reduce_dims, keepdim=True)
@@ -27,45 +88,21 @@ def render_reconstruction_grid(
     x_batch: torch.Tensor,
     mask_ratio: float,
 ):
-    # Forward pass - get full predictions before masking
-    latent, mask = model.forward_encoder(x_batch, mask_ratio=mask_ratio)
-    pred, pred_mask = model.forward_decoder(latent, mask)
+    """Channel-averaged grayscale panel grid for TensorBoard training monitoring.
 
-    # pred is (B, H'*W', stride_pred_px^2 * C)
-    B = pred.shape[0]
-    stride_pred_px = model.stride_pred_px
-    n_channels = model.encoder_config.n_channels
-    h_tk, w_tk = model.shapes.sz_tk_final  # token grid shape
+    The report-quality figure is `hiera_2d.analysis.recon_figure` instead; this one
+    is deliberately cheap and unlabelled.
+    """
+    r = reconstruct(model, x_batch, mask_ratio)
 
-    # De-normalize predictions using per-patch stats (just undo patch normalization by using true patch stats)
-    x_patches = patchify(x_batch, stride_pred_px)
-    patch_mean, patch_var = compute_patch_stats(x_patches)
-    pred = pred * (patch_var + 1e-6).sqrt() + patch_mean
+    x_vis = r.original.mean(dim=1, keepdim=True)
+    x_masked_vis = (r.original * r.visible).mean(dim=1, keepdim=True)
+    pred_vis = r.prediction.mean(dim=1, keepdim=True)
+    composite_vis = r.composite.mean(dim=1, keepdim=True)
 
-    # convert flat patch preds to image space
-    pred_img = unpatchify(pred, stride_pred_px, h_tk, w_tk, n_channels)
-
-    # create masked input visualization by upscaling mask from (B, n_mu) to input resolution
-    mask_vis = mask.float()
-    h_mu, w_mu = model.shapes.sz_mu
-    mask_vis = mask_vis.reshape(B, h_mu, w_mu)
-    # interpolate to input res for viz
-    mask_vis = torch.nn.functional.interpolate(mask_vis.unsqueeze(1), size=x_batch.shape[-2:], mode="nearest")
-    x_masked = x_batch * mask_vis  # zero out masked regions
-
-    # composite: original where visible, prediction where masked
-    pred_mask_vis = pred_mask.float().reshape(B, h_tk, w_tk)
-    pred_mask_vis = torch.nn.functional.interpolate(pred_mask_vis.unsqueeze(1), size=x_batch.shape[-2:], mode="nearest")
-    x_composite = x_batch * pred_mask_vis + pred_img * (1.0 - pred_mask_vis)
-
-    # average channels to get grayscale for visualization
-    x_vis = x_batch.mean(dim=1, keepdim=True)
-    x_masked_vis = x_masked.mean(dim=1, keepdim=True)
-    pred_vis = pred_img.mean(dim=1, keepdim=True)
-    composite_vis = x_composite.mean(dim=1, keepdim=True)
-
-    # normalize again because we have averaged and denormalized, so values may not be in [0,1] range anymore. use original image stats for consistency.
-    x_vis, x_masked_vis, pred_vis, composite_vis = _normalize_for_vis(
+    # normalize again because we have averaged and denormalized, so values may not be in [0, 1]
+    # anymore. use original image stats for consistency.
+    x_vis, x_masked_vis, pred_vis, composite_vis = normalize_for_vis(
         x_vis,
         x_vis,
         x_masked_vis,

@@ -1,7 +1,19 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 
-from .types import Int2d
+from hiera_2d.hiera.types import Int2d
+
+
+@dataclass(frozen=True, slots=True)
+class BlockReroll:
+    """Per-block reroll parameters, kept together so a block's schedule, grid size
+    and mask-unit shape can't drift out of sync across parallel dicts."""
+
+    schedule: tuple[Int2d, ...]
+    size: Int2d
+    masked_mu_shape: Int2d
 
 
 def undo_windowing(
@@ -37,9 +49,9 @@ def undo_windowing(
 class Unroll(nn.Module):
     """Reorder token sequence so q-pooling windows are contiguous."""
 
-    # after patch embedding, we have a token sequence like A A B B A A B B C C D D C C D D. But to apply pooling and
-    # attention, we need contiguous tokens, i.e. A A A A B B B B C C D D C C D D. This is what Unroll does. (Reroll is its
-    # inverse, which restores original spatial layout.)
+    # after patch embedding, we have a token sequence like A A B B A A B B C C D D C C D D. But to apply
+    # pooling and attention, we need contiguous tokens, i.e. A A A A B B B B C C D D C C D D. This is what
+    # Unroll does. (Reroll is its inverse, which restores the original spatial layout.)
 
     def __init__(self, sz_tk: Int2d, unroll_schedule: list[Int2d]):
         super().__init__()
@@ -99,8 +111,9 @@ class Unroll(nn.Module):
 class Reroll(nn.Module):
     """Inverse operation of Unroll for extracting intermediate 2D features."""
 
-    # (reroll is much more complex than Unroll, because Unroll runs once after patch embed while reroll needs to
-    # run after each stage end to restore 2D layout for intermediate feature extraction, thus needs to handle various schedules)
+    # (reroll is much more complex than Unroll, because Unroll runs once after patch embed while reroll
+    # needs to run after each stage end to restore 2D layout for intermediate feature extraction, thus
+    # needs to handle various schedules)
 
     def __init__(
         self,
@@ -113,22 +126,26 @@ class Reroll(nn.Module):
     ):
         super().__init__()
         self.size = (sz_in_px[0] // stride_patch_px[0], sz_in_px[1] // stride_patch_px[1])
-        self.schedule: dict[int, tuple[tuple[Int2d, ...], Int2d]] = {}
-        self.masked_mu_shape_by_block: dict[int, Int2d] = {}
+        self.reroll_by_block: dict[int, BlockReroll] = {}
         size = self.size
         schedule = list(unroll_schedule)
         mu_h, mu_w = sz_mask_unit_tk
         pool_stage_ends = set(stage_ends[:n_q_pool])
 
-        # precompute schedule for each stage block so we can efficiently reroll to 2D at each stage end. schedule is cumulative, i.e. by the last stage end we have the full unroll schedule, and in earlier stages we have only the relevant prefix of the schedule.
+        # precompute schedule for each stage block so we can efficiently reroll to 2D at each stage end.
+        # schedule is cumulative: by the last stage end we have the full unroll schedule, and in earlier
+        # stages we have only the relevant prefix of the schedule.
         for block_idx in range(stage_ends[-1] + 1):
-            self.schedule[block_idx] = (tuple(schedule), size)
-            self.masked_mu_shape_by_block[block_idx] = (mu_h, mu_w)
+            self.reroll_by_block[block_idx] = BlockReroll(
+                schedule=tuple(schedule), size=size, masked_mu_shape=(mu_h, mu_w)
+            )
 
             if block_idx in pool_stage_ends and schedule:
                 sh, sw = schedule[0]
                 if mu_h % sh != 0 or mu_w % sw != 0:
-                    raise ValueError("sz_mask_unit_tk must be divisible by stride_q_tk at each pool")
+                    msg = "sz_mask_unit_tk must be divisible by stride_q_tk at each pool"
+                    raise ValueError(msg)
+
                 size = (size[0] // sh, size[1] // sw)
                 mu_h //= sh
                 mu_w //= sw
@@ -140,20 +157,24 @@ class Reroll(nn.Module):
         block_idx: int,
         mask: torch.Tensor | None = None,
     ):
-        schedule, size = self.schedule[block_idx]
+        block = self.reroll_by_block[block_idx]
+        schedule, size = block.schedule, block.size
         B, N, C = x.shape
 
         if mask is not None:
-            mu_h, mu_w = self.masked_mu_shape_by_block[block_idx]
+            mu_h, mu_w = block.masked_mu_shape
             n_tk_per_mu = mu_h * mu_w
             if N % n_tk_per_mu != 0:
-                raise ValueError("masked token count must be divisible by mask-unit size")
+                msg = "masked token count must be divisible by mask-unit size"
+                raise ValueError(msg)
+
             return x.view(B, -1, mu_h, mu_w, C)
 
         cur_mu_h, cur_mu_w = 1, 1
         for sh, sw in schedule:
             if N % (sh * sw) != 0:
-                raise ValueError("token count must be divisible by stride product")
+                msg = "token count must be divisible by stride product"
+                raise ValueError(msg)
 
             x = x.view(B, sh, sw, N // (sh * sw), cur_mu_h, cur_mu_w, C)
             x = x.permute(0, 3, 1, 4, 2, 5, 6).contiguous()

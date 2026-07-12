@@ -1,32 +1,28 @@
-import argparse
 import json
-import random
-from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import torch
 import torchvision.utils as vutils
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from hiera_2d.experiments.data import DatasetType, get_dataset
-from hiera_2d.experiments.mae.visualization import _normalize_for_vis
+from hiera_2d.experiments.ar.config import (
+    EncoderSource,
+    PretrainedEncoderSource,
+    ScratchEncoderSource,
+    _parse_args,
+    build_ar_train_args,
+)
+from hiera_2d.experiments.ar.data import ARDataset, to_ar_dataset
+from hiera_2d.experiments.ar.model import HieraAR, ar_loss
+from hiera_2d.experiments.checkpoints import save_ar_training_checkpoint
+from hiera_2d.experiments.data import DatasetType, Split, get_dataset
+from hiera_2d.experiments.mae.visualization import normalize_for_vis
+from hiera_2d.experiments.scaling.config import ExperimentConfig, RunIdentity, load_experiment_config
+from hiera_2d.experiments.training_utils import build_warmup_cosine_scheduler, run_training_loop, seed_everything
 from hiera_2d.hiera.model import Hiera, HieraConfig
-
-from .data import to_ar_dataset
-from .model import ARHeadConfig, HieraAR, ar_loss
-
-
-def seed_everything(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def load_encoder_from_mae_checkpoint(checkpoint_path: Path, device: torch.device) -> Hiera:
@@ -43,6 +39,29 @@ def load_encoder_from_mae_checkpoint(checkpoint_path: Path, device: torch.device
     return encoder.to(device)
 
 
+def build_encoder(source: EncoderSource, device: torch.device) -> tuple[Hiera, HieraConfig, bool]:
+    """Build the encoder from an MAE checkpoint (pretrained) or random init (scratch).
+
+    The from-scratch path is the baseline for the pretrained-vs-random comparison:
+    identical architecture, trained on next-frame prediction only. Returns
+    (encoder, hiera_config, is_pretrained).
+    """
+    match source:
+        case PretrainedEncoderSource():
+            encoder = load_encoder_from_mae_checkpoint(source.mae_checkpoint, device)
+            print(f"Loaded pretrained encoder from {source.mae_checkpoint}")
+            return encoder, encoder.config, True
+
+        case ScratchEncoderSource():
+            encoder = Hiera(config=source.hiera).to(device)
+            print("Initialized encoder from scratch")
+            return encoder, source.hiera, False
+
+        case _:
+            msg = f"unknown encoder source: {source!r}"
+            raise ValueError(msg)
+
+
 def run_epoch(
     model: HieraAR,
     dataloader: DataLoader,
@@ -51,7 +70,19 @@ def run_epoch(
     epoch: int,
     *,
     training: bool,
+    unroll_steps: int,
+    scaler: torch.amp.GradScaler,
+    use_amp: bool,
 ):
+    """One epoch of pushforward rollout training.
+
+    Unrolls the model `unroll_steps` steps from the first frame, feeding its own
+    predictions back, and supervises every step against ground truth. During
+    training the fed-back prediction is detached, so gradients stay one-step-local
+    (the pushforward trick): the model learns to correct its own drift without
+    backprop-through-time, and VRAM stays at a single step. unroll_steps=1
+    recovers plain teacher-forced one-step training.
+    """
     model.train(mode=training)
 
     total_loss = 0.0
@@ -63,23 +94,31 @@ def run_epoch(
         tqdm(dataloader, desc=f"-> {label} epoch {epoch}", leave=False, unit="batch") as progress,
     ):
         for batch in progress:
-            frames = batch["frames"].to(device)  # (B, seq_len, C, H, W)
-            B, S = frames.shape[:2]
-
-            inputs = frames[:, :-1].reshape(B * (S - 1), *frames.shape[2:])
-            targets = frames[:, 1:].reshape(B * (S - 1), *frames.shape[2:])
-
-            preds = model(inputs)
-            loss = ar_loss(preds, targets)
+            frames = batch["frames"].to(device)  # (B, unroll_steps + 1, C, H, W)
 
             if training:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
 
-            total_loss += loss.item()
+            x = frames[:, 0]
+            rollout_loss = 0.0
+            for t in range(unroll_steps):
+                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                    pred = model(x)
+                    loss = ar_loss(pred, frames[:, t + 1])
+                if training:
+                    scaler.scale(loss / unroll_steps).backward()
+                    x = pred.detach().float()
+                else:
+                    x = pred.float()
+                rollout_loss += loss.item()
+
+            if training:
+                scaler.step(optimizer)
+                scaler.update()
+
+            total_loss += rollout_loss / unroll_steps
             n_batches += 1
-            progress.set_postfix(loss=f"{loss.item():.4f}")
+            progress.set_postfix(loss=f"{rollout_loss / unroll_steps:.6f}")
 
     return total_loss / n_batches
 
@@ -87,7 +126,7 @@ def run_epoch(
 @torch.no_grad()
 def visualize_ar_predictions(
     model: HieraAR,
-    dataset,
+    dataset: ARDataset,
     device: torch.device,
     epoch: int,
     writer: SummaryWriter,
@@ -108,7 +147,7 @@ def visualize_ar_predictions(
     pred_vis = preds.mean(dim=1, keepdim=True)
 
     # normalize using target range
-    pred_vis, target_vis = _normalize_for_vis(target_vis, pred_vis, target_vis)
+    pred_vis, target_vis = normalize_for_vis(target_vis, pred_vis, target_vis)
 
     # grid: row 1 = target, row 2 = prediction
     tiles = [target_vis[i : i + 1] for i in range(n_steps)]
@@ -117,63 +156,64 @@ def visualize_ar_predictions(
     writer.add_image("samples/target_vs_pred", grid, epoch)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="AR head training for Hiera")
-    parser.add_argument("--mae-checkpoint", type=Path, required=True, help="Path to pretrained MAE checkpoint")
-    parser.add_argument("--ar-config", type=Path, help="Path to AR head JSON config")
-    parser.add_argument("--data-path", type=Path, required=True, help="Path to dataset directory")
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--seq-len", type=int, default=10, help="Number of frames per AR sequence")
-    parser.add_argument("--n-epochs", type=int, default=100)
-    parser.add_argument("--n-warmup-epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--min-lr", type=float, default=1e-6)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("-o", "--output-dir", type=Path, required=True)
-    parser.add_argument("--dataset", type=DatasetType, choices=list(DatasetType), default=DatasetType.GRAY_SCOTT)
-    parser.add_argument("--name", type=str, default=f"ar_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
-    return parser.parse_args()
+def train_ar(cfg: ExperimentConfig, run: RunIdentity) -> None:
+    """Run one AR training to completion: resolve the typed setup from `cfg` + the
+    per-run `identity`, build the encoder (pretrained from `run.mae_checkpoint`, or
+    from-scratch when it is `None`) and AR head, train, and write the provenance
+    dump and best checkpoint under `out_dir / name`.
 
-
-def main():
-    args = parse_args()
-    seed_everything(args.seed)
+    The imperative core of the AR trainer — no argparse, no TOML loading. Called
+    directly (in a fresh process) by the scaling orchestrator and by the thin
+    `main` shell that backs the `train-ar` console script.
+    """
+    args = build_ar_train_args(cfg, run)
+    ar_run = args.run
+    seed_everything(ar_run.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    run_path = Path(args.output_dir / args.name).resolve()
-    if run_path.exists():
-        raise FileExistsError(f"Output directory already exists: {run_path}")
-    run_path.mkdir(parents=True, exist_ok=True)
+    if args.path.exists():
+        msg = f"Output directory already exists: {args.path}"
+        raise FileExistsError(msg)
 
-    writer = SummaryWriter(log_dir=run_path)
+    args.path.mkdir(parents=True, exist_ok=True)
 
-    # load pretrained encoder from MAE checkpoint
-    encoder = load_encoder_from_mae_checkpoint(args.mae_checkpoint, device)
-    print(f"Loaded encoder from {args.mae_checkpoint}")
+    writer = SummaryWriter(log_dir=args.path)
 
-    # AR head config
-    if args.ar_config:
-        ar_config = ARHeadConfig.model_validate_json(args.ar_config.read_text())
-    else:
-        ar_config = ARHeadConfig()
+    # pretrained (from MAE) or from-scratch (random) encoder
+    encoder, hiera_config, is_pretrained = build_encoder(args.encoder, device)
+    model = HieraAR(encoder=encoder, config=args.ar_head).to(device)
 
-    model = HieraAR(encoder=encoder, config=ar_config).to(device)
+    # Frozen-encoder probe: train only the AR head on top of fixed (pretrained)
+    # features. Set the encoder to eval() so any encoder-internal stochasticity
+    # stays off, and exclude its params from the optimizer.
+    if ar_run.freeze_encoder:
+        for p in model.encoder.parameters():
+            p.requires_grad = False
+
+        model.encoder.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Total params: {n_params:,} (all trainable)")
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"Total params: {n_params:,} ({n_trainable:,} trainable) | "
+        f"freeze_encoder={ar_run.freeze_encoder} "
+        f"unroll_steps={ar_run.unroll_steps} predict_residual={args.ar_head.predict_residual}"
+    )
 
-    # data
-    ds_train = get_dataset(args.dataset, args.data_path, split="train")
-    ds_val = get_dataset(args.dataset, args.data_path, split="val")
-    ar_train = to_ar_dataset(ds_train, seq_len=args.seq_len)
-    ar_val = to_ar_dataset(ds_val, seq_len=args.seq_len)
+    ds_train = get_dataset(args.dataset, args.data_path, split=Split.TRAIN, n_trajectories=args.n_trajectories)
+    # Read val lazily (Kolmogorov only): at the largest N its eager copy would sit on
+    # top of the full train subset and exhaust host RAM. Val is scanned sequentially,
+    # so on-demand reads cost nothing extra.
+    ds_val = get_dataset(args.dataset, args.data_path, split=Split.VAL, lazy=args.dataset == DatasetType.KOLMOGOROV)
+    seq_len = ar_run.unroll_steps + 1  # each window: 1 input frame + unroll_steps targets
+    ar_train = to_ar_dataset(ds_train, seq_len=seq_len)
+    ar_val = to_ar_dataset(ds_val, seq_len=seq_len)
 
     ld_train = DataLoader(
         ar_train,
-        batch_size=args.batch_size,
+        batch_size=ar_run.batch_size,
         shuffle=True,
         num_workers=0,
         pin_memory=device.type == "cuda",
@@ -181,81 +221,113 @@ def main():
     )
     ld_val = DataLoader(
         ar_val,
-        batch_size=args.batch_size,
+        batch_size=ar_run.batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=device.type == "cuda",
     )
 
     optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
+        [p for p in model.parameters() if p.requires_grad],
+        lr=ar_run.lr,
         betas=(0.9, 0.95),
-        weight_decay=args.weight_decay,
+        weight_decay=ar_run.weight_decay,
     )
-    scheduler = SequentialLR(
+    scheduler = build_warmup_cosine_scheduler(
         optimizer,
-        schedulers=[
-            LinearLR(optimizer, start_factor=1e-2, end_factor=1.0, total_iters=args.n_warmup_epochs),
-            CosineAnnealingLR(optimizer, T_max=args.n_epochs - args.n_warmup_epochs, eta_min=args.min_lr),
-        ],
-        milestones=[args.n_warmup_epochs],
+        n_warmup_epochs=ar_run.n_warmup_epochs,
+        n_epochs=ar_run.n_epochs,
+        min_lr=ar_run.min_lr,
     )
 
+    use_amp = ar_run.amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
+
+    mae_checkpoint = args.encoder.mae_checkpoint if isinstance(args.encoder, PretrainedEncoderSource) else None
     config_dump = {
-        "ar_config": ar_config.model_dump(mode="json"),
-        "mae_checkpoint": str(args.mae_checkpoint),
-        "seq_len": args.seq_len,
-        "lr": args.lr,
-        "n_epochs": args.n_epochs,
-        "batch_size": args.batch_size,
+        "ar_config": args.ar_head.model_dump(mode="json"),
+        "hiera": hiera_config.model_dump(mode="json"),
+        "is_pretrained": is_pretrained,
+        "mae_checkpoint": str(mae_checkpoint) if mae_checkpoint else None,
+        "freeze_encoder": ar_run.freeze_encoder,
+        "unroll_steps": ar_run.unroll_steps,
+        "amp": use_amp,
+        "lr": ar_run.lr,
+        "n_epochs": ar_run.n_epochs,
+        "batch_size": ar_run.batch_size,
+        "n_trajectories": args.n_trajectories,
     }
-    (run_path / "args.json").write_text(json.dumps(config_dump, indent=4))
+    (args.path / "args.json").write_text(json.dumps(config_dump, indent=4))
+    (args.path / "checkpoints").mkdir(exist_ok=True)
 
-    best_val_loss = float("inf")
-    (run_path / "checkpoints").mkdir(exist_ok=True)
+    def train_epoch(epoch: int):
+        return run_epoch(
+            model,
+            ld_train,
+            optimizer,
+            device,
+            epoch,
+            training=True,
+            unroll_steps=ar_run.unroll_steps,
+            scaler=scaler,
+            use_amp=use_amp,
+        )
 
-    t_training_start = datetime.now()
-    print(f"Training started at {t_training_start:%Y-%m-%d %H:%M:%S}")
+    def validate_epoch(epoch: int):
+        return run_epoch(
+            model,
+            ld_val,
+            None,
+            device,
+            epoch,
+            training=False,
+            unroll_steps=ar_run.unroll_steps,
+            scaler=scaler,
+            use_amp=use_amp,
+        )
 
-    with tqdm(range(args.n_epochs), desc="Training", unit="epoch") as progress:
-        for epoch in progress:
-            t_epoch_start = datetime.now()
-            writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+    def on_epoch_end(epoch: int, _train_loss: float, val_loss: float, is_best: bool):
+        visualize_ar_predictions(model, ar_val, device, epoch, writer)
+        if is_best:
+            save_ar_training_checkpoint(
+                run_path=args.path,
+                epoch=epoch,
+                n_epochs=ar_run.n_epochs,
+                model=model,
+                val_loss=val_loss,
+                config=config_dump,
+                data_path=str(args.data_path),
+                dataset=args.dataset.value,
+            )
 
-            train_loss = run_epoch(model, ld_train, optimizer, device, epoch, training=True)
-            val_loss = run_epoch(model, ld_val, None, device, epoch, training=False)
+    try:
+        run_training_loop(
+            n_epochs=ar_run.n_epochs,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            writer=writer,
+            train_epoch=train_epoch,
+            validate_epoch=validate_epoch,
+            on_epoch_end=on_epoch_end,
+        )
+    finally:
+        writer.close()
 
-            epoch_duration = (datetime.now() - t_epoch_start).total_seconds()
 
-            writer.add_scalar("loss/train", train_loss, epoch)
-            writer.add_scalar("loss/val", val_loss, epoch)
-            writer.add_scalar("time/epoch_seconds", epoch_duration, epoch)
-            writer.add_scalar("time/elapsed_minutes", (datetime.now() - t_training_start).total_seconds() / 60, epoch)
-
-            progress.write(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f} ({epoch_duration:.1f}s)")
-            progress.set_postfix(train=f"{train_loss:.4f}", val=f"{val_loss:.4f}")
-
-            visualize_ar_predictions(model, ar_val, device, epoch, writer)
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "val_loss": best_val_loss,
-                        "config": config_dump,
-                    },
-                    run_path / "checkpoints" / "best_model.pt",
-                )
-                progress.write(f"Epoch {epoch}: saved new best model")
-
-            scheduler.step()
-
-    total_duration = datetime.now() - t_training_start
-    print(f"Training complete in {total_duration.total_seconds() / 60:.1f}min. Best validation loss: {best_val_loss:.4f}")
-    writer.close()
+def main(argv: list[str] | None = None):
+    """Thin shell for the `train-ar` console script: parse the CLI, load the
+    experiment config, build the per-run identity (encoder source + epoch
+    override travel on it), and hand off to `train_ar`."""
+    parsed = _parse_args(argv)
+    cfg = load_experiment_config(parsed.config)
+    run = RunIdentity(
+        n_trajectories=parsed.n_trajectories,
+        out_dir=parsed.output_dir,
+        name=parsed.name,
+        mae_checkpoint=parsed.mae_checkpoint,
+        n_epochs=parsed.n_epochs,
+    )
+    train_ar(cfg, run)
 
 
 if __name__ == "__main__":

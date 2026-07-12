@@ -1,14 +1,14 @@
 {
   "sz_in_px": [256, 256],
   "n_channels": 2,
-  "d_embed": 32,
+  "d_embed": 48,
   "n_heads": 1,
   "stages": [
     {"n_blocks": 1, "is_mask_unit_attn": true, "pool_q": true},
-    {"n_blocks": 1, "is_mask_unit_attn": true, "pool_q": true},
-    {"n_blocks": 2, "is_mask_unit_attn": false, "pool_q": false}
+    {"n_blocks": 2, "is_mask_unit_attn": true, "pool_q": true},
+    {"n_blocks": 5, "is_mask_unit_attn": false, "pool_q": false}
   ],
-  "sz_mask_unit_tk": [8, 8],
+  "sz_mask_unit_tk": [4, 4],
   "stride_q_tk": [2, 2],
   "patch_embed": {
     "kernel_px": [4, 4],

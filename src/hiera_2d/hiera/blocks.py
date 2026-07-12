@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .attention import Attention
+from hiera_2d.hiera.attention import Attention
 
 
 class Mlp(nn.Module):

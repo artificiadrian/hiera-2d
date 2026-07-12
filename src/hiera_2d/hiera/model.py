@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 
-from .blocks import HieraBlock
-from .embedding import PatchEmbed, PatchEmbedConfig
-from .reroll import Reroll, Unroll
-from .token_ops import expand_mask_units
-from .types import HieraShapes, Int2d, Model
+from hiera_2d.hiera.blocks import HieraBlock
+from hiera_2d.hiera.embedding import PatchEmbed, PatchEmbedConfig
+from hiera_2d.hiera.reroll import Reroll, Unroll
+from hiera_2d.hiera.token_ops import expand_mask_units
+from hiera_2d.hiera.types import HieraShapes, Int2d, Model
 
 
 class HieraStageConfig(Model):
@@ -82,7 +82,7 @@ class Hiera(nn.Module):
     def _build_blocks(
         self,
     ):
-        """Builds Hiera encoder blocks based on config and configures them to apply mu-attention and q-pooling at correct stages."""
+        """Build Hiera encoder blocks, configuring mu-attention and q-pooling at the correct stages."""
         d_in = self.config.d_embed
         d_out = self.config.d_embed
         n_heads = self.config.n_heads
@@ -129,14 +129,17 @@ class Hiera(nn.Module):
 
         return blocks, stage_ends, d_out
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor | None = None,
-        return_intermediates: bool = False,
-    ):
-        """Forward pass through Hiera encoder."""
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None):
+        """Forward pass through the Hiera encoder to the final token sequence."""
+        tokens, _ = self._encode(x, mask, collect_intermediates=False)
+        return tokens
 
+    def forward_with_intermediates(self, x: torch.Tensor, mask: torch.Tensor | None = None):
+        """Like `forward`, but also returns the per-stage-end feature maps (rerolled to
+        the 2D grid) that the AR head consumes as a multi-scale skip stack."""
+        return self._encode(x, mask, collect_intermediates=True)
+
+    def _encode(self, x: torch.Tensor, mask: torch.Tensor | None, *, collect_intermediates: bool):
         # embed input patches -> (B, N, d_out)
         # why unroll? after patch embedding, tokens of the same mask unit are not contiguous
         # (it goes left-to-right top-to-bottom), thus mixing tokens of different mask units.
@@ -161,12 +164,9 @@ class Hiera(nn.Module):
         for i, block in enumerate(self.blocks):
             x = block(x)
 
-            if return_intermediates and i in self.stage_ends:
-                # we want to return intermediate values at each stage end, but we have a flat token sequence, so we need to reroll back to 2D grid
+            if collect_intermediates and i in self.stage_ends:
+                # reroll the flat token sequence back to the 2D grid at each stage end
                 interm = self.reroll(x, block_idx=i, mask=mask)
                 intermediates.append(interm)
 
-        if return_intermediates:
-            return x, intermediates
-
-        return x
+        return x, intermediates
