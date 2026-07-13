@@ -1,3 +1,4 @@
+import json
 from enum import StrEnum
 from pathlib import Path
 
@@ -14,6 +15,72 @@ class DatasetType(StrEnum):
 class Split(StrEnum):
     TRAIN = "train"
     VAL = "val"
+
+
+def split_rows(n_total: int, train_frac: float, split_seed: int, split: Split) -> np.ndarray:
+    """File row indices belonging to `split`.
+
+    The partition is a fixed permutation of the file's trajectories, so it is
+    reproducible and disjoint, and the file itself stays split-independent. Single
+    source for the dataset and for the normalization statistics, which must agree on
+    what "training data" means or the statistics leak.
+    """
+    perm = np.random.default_rng(split_seed).permutation(n_total)
+    n_train = round(n_total * train_frac)
+
+    return perm[:n_train] if split == Split.TRAIN else perm[n_train:]
+
+
+def train_pool_norm_stats(path: Path, *, train_frac: float = 0.8, split_seed: int = 0) -> dict[str, float]:
+    """Normalization statistics computed over the TRAINING split only.
+
+    The validation trajectories must not contribute: statistics are model inputs, so
+    deriving them from held-out data leaks it. The file's own `u_mean`/`u_std` root
+    attrs are computed by the generator over *every* trajectory and are therefore
+    unusable for this purpose -- they are deliberately ignored.
+
+    The statistics come from the whole training *pool*, not from the `n_trajectories`
+    subset a given run draws, so every data budget and both splits share one
+    normalization; otherwise the loss scale would shift with N and the scaling curves
+    would not be comparable.
+
+    Computed by streaming over the training trajectories (the full file does not fit
+    in RAM) and cached in a sidecar JSON next to the dataset, since the read is slow
+    and the result depends only on (file, train_frac, split_seed).
+    """
+    cache_path = path.with_suffix(path.suffix + ".trainstats.json")
+    key = {"train_frac": train_frac, "split_seed": split_seed, "n_bytes": path.stat().st_size}
+
+    if cache_path.exists():
+        cached = json.loads(cache_path.read_text())
+        if cached.get("key") == key:
+            return {"mean": cached["mean"], "std": cached["std"]}
+
+    with h5py.File(path, "r") as f:
+        dset = f["velocity"]
+        rows = np.sort(split_rows(dset.shape[0], train_frac, split_seed, Split.TRAIN))
+
+        # Per-channel sums in float64: the frames are float32 and there are ~10^10 of
+        # them, so a naive float32 accumulation would lose the low-order bits.
+        total = np.zeros(2)
+        total_sq = np.zeros(2)
+        count = 0
+
+        for row in rows:
+            traj = dset[int(row)].astype(np.float64)  # (T, 2, H, W)
+            total += traj.sum(axis=(0, 2, 3))
+            total_sq += (traj**2).sum(axis=(0, 2, 3))
+            count += traj.shape[0] * traj.shape[2] * traj.shape[3]
+
+    mean = total / count
+    std = np.sqrt(total_sq / count - mean**2)
+
+    # One scalar mean/std for both velocity components, matching how the frames are
+    # normalized downstream (a single shared scale, not per-channel).
+    stats = {"mean": float(mean.mean()), "std": float(std.mean())}
+    cache_path.write_text(json.dumps({"key": key, **stats}, indent=2))
+
+    return stats
 
 
 class LazyH5Trajectories:
@@ -56,8 +123,9 @@ class KolmogorovDataset(Dataset):
 
     HDF5 layout: a single flat ``velocity`` dataset of shape
     (n_sims, n_timesteps, 2, H, W). The train/val split is applied at load time
-    by a fixed permutation (``split_seed``), not stored in the file. Global norm
-    stats are stored as root attrs (u_mean, u_std, v_mean, v_std).
+    by a fixed permutation (``split_seed``), not stored in the file. Normalization
+    comes from ``train_pool_norm_stats`` -- the training split only, never the
+    file's all-trajectory root attrs.
 
     Indexing yields a single normalized frame (``{"initial": (2, H, W)}``), which is
     what MAE pretraining consumes; the AR pipeline builds its own sequences from
@@ -97,12 +165,8 @@ class KolmogorovDataset(Dataset):
             n_total = dset.shape[0]
             n_timesteps = dset.shape[1]
 
-            # Split into train/val by a fixed permutation so the partition is
-            # reproducible and disjoint; the file itself is split-independent.
-            perm = np.random.default_rng(split_seed).permutation(n_total)
-            n_train = round(n_total * train_frac)
-            train_idx = perm[:n_train]
-            split_idx = train_idx if split == Split.TRAIN else perm[n_train:]
+            train_idx = split_rows(n_total, train_frac, split_seed, Split.TRAIN)
+            split_idx = train_idx if split == Split.TRAIN else split_rows(n_total, train_frac, split_seed, Split.VAL)
 
             if split == Split.TRAIN and n_trajectories is not None:
                 if not 0 < n_trajectories <= len(train_idx):
@@ -122,36 +186,19 @@ class KolmogorovDataset(Dataset):
             # shuffles. Peak RAM scales with the selection, not the full file.
             rows = np.sort(final_idx)
 
-            if "u_mean" in f.attrs:
-                self.norm_stats = {
-                    "mean": float(np.mean([f.attrs["u_mean"], f.attrs["v_mean"]])),
-                    "std": float(np.mean([f.attrs["u_std"], f.attrs["v_std"]])),
-                }
-
             data = None if lazy else dset[rows]
 
-        # Subsetting keeps the file's global norm stats (loaded above); it does NOT
-        # recompute from the subset, so every N shares one normalization. The
-        # attr-absent fallback below only fires for files without stored stats.
-        if lazy:
-            # Lazy reading cannot recompute stats without materializing the data it is
-            # avoiding, so the file's global stats must be present.
-            if not hasattr(self, "norm_stats"):
-                msg = "lazy loading requires global stat attrs (u_mean/u_std/...) in the file"
-                raise ValueError(msg)
+        # Train-pool statistics, for BOTH splits and every N: they must not see the
+        # validation trajectories (leak) and must not vary with the subset (which would
+        # make the loss scale N-dependent). NB the checkpoints reported in the write-up
+        # predate this and were trained against the file's all-trajectory attrs, whose
+        # std is 0.05% larger.
+        self.norm_stats = train_pool_norm_stats(path, train_frac=train_frac, split_seed=split_seed)
 
+        if lazy:
             self.sims = LazyH5Trajectories(path, rows)
         else:
             self.sims = {i: data[i] for i in range(data.shape[0])}
-
-        if n_trajectories is not None and not hasattr(self, "norm_stats"):
-            # A subset relies on the file's global stats; recomputing from the subset
-            # would silently break the shared-normalization invariant across N.
-            msg = "n_trajectories subset requires global stat attrs (u_mean/u_std/...) in the file"
-            raise ValueError(msg)
-
-        if not hasattr(self, "norm_stats"):
-            self.norm_stats = self._compute_norm_stats(self.sims)
 
         self.n_timesteps = n_timesteps
 
@@ -168,15 +215,6 @@ class KolmogorovDataset(Dataset):
         initial = (initial - self.norm_stats["mean"]) / self.norm_stats["std"]
 
         return {"initial": initial}
-
-    @staticmethod
-    def _compute_norm_stats(sims: dict[int, np.ndarray]) -> dict[str, float]:
-        means = np.array([sims[i].mean() for i in range(len(sims))])
-        stds = np.array([sims[i].std() for i in range(len(sims))])
-        return {
-            "mean": float(means.mean()),
-            "std": float(np.sqrt(np.mean(stds**2 + (means - means.mean()) ** 2))),
-        }
 
 
 def get_dataset(dataset_type: DatasetType, path: Path, split: Split = Split.TRAIN, **kwargs) -> KolmogorovDataset:

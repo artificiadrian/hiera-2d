@@ -56,6 +56,9 @@ for N in 50 100 250; do
       -o outputs/kg_scaling/analysis_spectral/spectrum_N$N.png
 done
 
+# dataset Reynolds signature (E(k) binned by Re; the trend is spectral, not visual)
+uv run re-spectrum --data-path kolmogorov2d_256_variedRe.h5 -o outputs/analysis_re/re_spectrum.png
+
 # dataset decorrelation time, MAE loss curve, reconstruction panel
 uv run autocorrelation --data-path kolmogorov2d_256_variedRe.h5 --delta-t 0.1 \
     -o outputs/analysis_autocorr/autocorrelation.png
@@ -66,6 +69,26 @@ uv run recon-figure --checkpoint outputs/kg_scaling/N250/mae_e120/checkpoints/be
 
 Individual arms can also be trained directly with `train-mae` / `train-ar`; see `--help` and the comments in
 `configs/scaling/*.toml`.
+
+## Practical work (MAE feasibility study)
+
+The practical-work report covers only the first half of this codebase: the Hiera reimplementation and the
+demonstration that MAE pretraining converges on Kolmogorov flow. The autoregressive head and the data-scaling
+sweep above are thesis work and are not discussed there. The relevant code:
+
+- `src/hiera_2d/hiera/` — the 2D Hiera encoder (`model.py`, `attention.py`, `blocks.py`, non-overlapping
+  `embedding.py`) and the MAE wrapper (`mae.py`).
+- `src/hiera_2d/experiments/mae/` — the pretraining loop. Architecture in `configs/hiera/kg_small.toml`
+  (~3.4M params), decoder + mask ratio in `configs/mae/small.toml`.
+
+The two figures in that report come from a single 120-epoch MAE run:
+
+```bash
+uv run train-mae configs/scaling/kg_scaling.toml --n-trajectories 250 -o outputs/pw --name mae_e120
+uv run loss-curve outputs/pw/mae_e120 -o outputs/pw/loss_curve.png
+uv run recon-figure --checkpoint outputs/pw/mae_e120/checkpoints/best_model.pt \
+    --sample 0 -o outputs/pw/recon_sample0.png
+```
 
 ## Notes
 

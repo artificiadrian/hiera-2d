@@ -32,7 +32,11 @@ from hiera_2d.hiera.model import Hiera, HieraConfig
 # masked patches, so on visible ones the decoder was never trained to be accurate and its
 # output there shows seams it was never asked to avoid. The composite -- original where
 # visible, prediction where hidden -- is what the model was actually optimized to produce.
-COLUMNS = ("ground truth", "masked input", "composite (prediction where masked)")
+COLUMNS = ("masked input", "ground truth", "composite (prediction where masked)")
+
+# Ground truth sits next to the composite so the reconstruction can be read against the
+# truth without the masked input between them; it also sets each row's colour scale.
+GROUND_TRUTH_COL = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +105,7 @@ def build_panels(loaded: LoadedMAE, frame: torch.Tensor, mean: float, std: float
     visible = r.visible[0, 0].cpu().numpy().astype(bool)
     masked = np.where(visible, original, np.nan)
 
-    fields = (original, masked, composite)
+    fields = (masked, original, composite)
 
     # Vorticity is a spectral derivative, so it cannot be taken through the holes:
     # filling them with any value (zero, or the NaNs themselves) rings across the
@@ -109,7 +113,7 @@ def build_panels(loaded: LoadedMAE, frame: torch.Tensor, mean: float, std: float
     # flow. The visible region's vorticity is by definition the true field's, so it
     # is differentiated intact and the holes are punched in afterwards.
     omega_true = vorticity(original)
-    omega = np.stack([omega_true, np.where(visible, omega_true, np.nan), vorticity(composite)])
+    omega = np.stack([np.where(visible, omega_true, np.nan), omega_true, vorticity(composite)])
 
     return ReconPanels(u=np.stack([f[0] for f in fields]), omega=omega)
 
@@ -130,7 +134,7 @@ def plot_reconstruction(panels: ReconPanels, out_path: Path, title: str) -> None
     for row, (data, label) in enumerate(rows):
         # One symmetric scale per row, taken from ground truth, so the panels are
         # directly comparable and a washed-out prediction stays visibly washed out.
-        vlim = float(np.nanmax(np.abs(data[0])))
+        vlim = float(np.nanmax(np.abs(data[GROUND_TRUTH_COL])))
 
         for col in range(len(COLUMNS)):
             ax = axes[row, col]

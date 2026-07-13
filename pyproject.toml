@@ -26,6 +26,7 @@ run-scaling = "hiera_2d.experiments.scaling.run_scaling:main"
 scaling-curve = "hiera_2d.analysis.scaling_curve:main"
 spectral-plot = "hiera_2d.analysis.spectral_plot:main"
 autocorrelation = "hiera_2d.analysis.autocorrelation:main"
+re-spectrum = "hiera_2d.analysis.re_spectrum:main"
 loss-curve = "hiera_2d.analysis.loss_curve:main"
 recon-figure = "hiera_2d.analysis.recon_figure:main"
 

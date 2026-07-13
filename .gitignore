@@ -23,5 +23,7 @@ DESCR.md
 draft.tex
 
 *.h5
+# Normalization stats cached next to a dataset; derived, and regenerated on demand.
+*.trainstats.json
 outputs/
 docs/
