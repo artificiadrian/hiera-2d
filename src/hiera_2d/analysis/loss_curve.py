@@ -58,7 +58,10 @@ def load_loss_history(run_dir: Path) -> LossHistory:
     warmup_epochs = None
     if "lr" in tags:
         lr = np.array([e.value for e in accumulator.Scalars("lr")])
-        warmup_epochs = int(np.argmax(lr)) + 1  # LR climbs through warmup, so the peak ends it
+        # The LR climbs through warmup and the peak is the FIRST epoch at full LR, i.e.
+        # the first epoch after warmup -- so the peak's index IS the warmup length, and
+        # adding one would count that post-warmup epoch as part of it.
+        warmup_epochs = int(np.argmax(lr))
 
     return LossHistory(
         epochs=np.arange(len(val)),
@@ -79,8 +82,13 @@ def tail_start(val: np.ndarray, factor: float = 2.0) -> int:
     return int(within[0]) if within.size else 0
 
 
-def plot_loss_curve(history: LossHistory, out_path: Path, title: str) -> None:
-    """Write the loss figure: linear axes, warmup shaded, converged tail inset."""
+def plot_loss_curve(history: LossHistory, out_path: Path, title: str = "") -> None:
+    """Write the loss figure: linear axes, warmup shaded, converged tail inset.
+
+    Deliberately spare on text: the figure lives next to a caption in the write-up, so
+    the title is empty by default and the numbers (best loss, epoch) belong in the
+    caption rather than annotated onto the axes.
+    """
     import matplotlib.pyplot as plt
 
     best = int(np.argmin(history.val))
@@ -91,42 +99,32 @@ def plot_loss_curve(history: LossHistory, out_path: Path, title: str) -> None:
     ax.plot(history.epochs, history.val, color="tab:orange", lw=1.8, label="validation")
 
     if history.warmup_epochs:
-        ax.axvspan(
-            0,
-            history.warmup_epochs,
-            color="gray",
-            alpha=0.12,
-            label=f"LR warmup ({history.warmup_epochs} epochs)",
-        )
+        ax.axvspan(0, history.warmup_epochs, color="gray", alpha=0.12, label="LR warmup")
 
+    # The loss is MSE against per-patch-normalized targets, so it is dimensionless and
+    # 1.0 is the trivial baseline: predicting each patch's own mean. Saying so on the
+    # axis is what makes 0.033 legible as "3% of the per-patch variance is left".
     ax.set_xlim(0, history.epochs[-1])
     ax.set_ylim(0, None)
     ax.set_xlabel("epoch")
-    ax.set_ylabel("MAE reconstruction loss (MSE, normalized units)")
-    ax.set_title(title)
+    ax.set_ylabel("reconstruction MSE\n(per-patch normalized; 1.0 = predicting the patch mean)")
     ax.grid(True, alpha=0.3)
 
-    axins = ax.inset_axes((0.42, 0.34, 0.55, 0.55))
+    if title:
+        ax.set_title(title)
+
+    # Sits below the legend (upper right) and above the converged tail it magnifies.
+    axins = ax.inset_axes((0.45, 0.28, 0.52, 0.50))
     axins.plot(history.epochs[start:], history.train[start:], color="tab:blue", lw=1.5)
     axins.plot(history.epochs[start:], history.val[start:], color="tab:orange", lw=1.5)
     axins.plot(best, history.val[best], "o", color="tab:red", ms=5, zorder=5)
-    axins.annotate(
-        f"best: {history.val[best]:.4f} (epoch {best})",
-        xy=(best, history.val[best]),
-        xytext=(-10, 22),
-        textcoords="offset points",
-        ha="right",
-        fontsize=8,
-        color="tab:red",
-    )
     axins.margins(y=0.12)
     axins.set_xlim(start, history.epochs[-1])
-    axins.set_title("converged tail (zoom)", fontsize=9)
     axins.tick_params(labelsize=8)
     axins.grid(True, alpha=0.3)
     ax.indicate_inset_zoom(axins, edgecolor="gray")
 
-    ax.legend(loc="upper left")
+    ax.legend(loc="upper right")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -135,7 +133,7 @@ def plot_loss_curve(history: LossHistory, out_path: Path, title: str) -> None:
 def main(argv: Sequence[str] | None = None):
     p = argparse.ArgumentParser(description="Plot the loss curve of a training run")
     p.add_argument("run_dir", type=Path, help="Run directory holding the TensorBoard event file")
-    p.add_argument("--title", default="MAE pretraining on Kolmogorov flow")
+    p.add_argument("--title", default="", help="Axes title; empty (the default) for a figure that carries a caption")
     p.add_argument("-o", "--output", type=Path, default=Path("outputs/analysis_loss/loss_curve.png"))
     args = p.parse_args(argv)
 
